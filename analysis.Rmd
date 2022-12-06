@@ -1,0 +1,293 @@
+---
+title: "Analisis Hotel"
+output: pdf_document
+date: "2022-11-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Projek Akhir Data Science
+
+```{r }
+# install.packages("tidyverse")
+# install.packages("viridis")
+# install.packages("zoo")
+# install.packages("janitor")
+```
+
+### Import Library=
+
+```{r }
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(tidymodels)
+library(vroom)
+library(here)
+library(shiny)
+```
+
+### Import dataset
+
+```{r }
+hostel = read.csv("https://rosyid.sgp1.digitaloceanspaces.com/Hostel.csv")
+```
+
+## Data Cleaning
+
+### Menghilangkan Data yang NA
+
+```{r}
+hostel = hostel %>% drop_na(summary.score, lon, lat)
+```
+
+### Menghilangkan Outlier Pirce
+
+```{r}
+hostel = hostel %>% filter(price.from < 10000)
+```
+
+### Convert Distance ke numeric
+
+```{r}
+hostel$Distance <- as.character(hostel$Distance)
+hostel$Distance <- 
+  gsub("km from city centre", "", hostel$Distance)
+hostel$Distance <- as.numeric(hostel$Distance)
+```
+
+```{r pressure}
+hostel
+```
+
+## Visualisasi Data
+
+### Distribusi Harga Saat Menginap Satu Malam
+
+```{r echo=FALSE}
+hostel %>% 
+  ggplot(aes(price.from, fill = City)) +
+  geom_histogram(show.legend = FALSE, bins = 30) +
+  facet_wrap(~City, scales = "free") +
+  theme(axis.text.x = element_text(angle = 0)) +
+  labs(x = "Harga Menginap (JPY)", y="Jumlah",
+       title = "Distribusi Harga Saat Menginap Satu Malam")
+
+```
+
+### Analisis Rating
+
+```{r}
+hostel$rating.band <- 
+  factor(hostel$rating.band, 
+         levels = c("Superb", "Fabulous", "Very Good", "Good", "Rating"))
+hostel %>% 
+  na.omit() %>% 
+  ggplot(aes(x = rating.band, y = summary.score, 
+             fill = rating.band)) +
+  geom_boxplot(show.legend = FALSE) +
+  labs(x = "Rating Band", y = "Summary Score")
+```
+
+### Korelasi Lokasi dengan Price dan Rating
+
+```{r}
+hostel %>% 
+  filter(price.from <= 10000) %>% 
+  select(Distance, price.from, summary.score) %>% 
+  na.omit() %>% 
+  ggplot(aes(x = Distance, y = price.from, 
+             colour = summary.score), frame = TRUE) +
+  geom_point() +
+  theme(legend.position=c(.85,.75)) +
+  labs(title = "Korelasi Lokasi dengan Price dan Rating", 
+       y = "Harga untuk Menginap (JPY)", x = "Jarak dengan pusat kota (km)") +
+  scale_colour_gradient2(high = "red", mid = "white", low = "black",
+                      midpoint = 6, name = "Rating Score")
+```
+
+### Distribusi Rating
+
+```{r echo=FALSE}
+hostel <- 
+  hostel %>% 
+  group_by(City) %>% 
+  mutate(Average.score = mean(summary.score, na.rm = TRUE)) %>% 
+  ungroup()
+
+ggplot() +
+  geom_histogram(data = hostel, aes(summary.score, fill = rating.band,
+                 ), bins=30,show.legend = FALSE) +
+  geom_vline(data = hostel, aes(xintercept = Average.score), color = "blue", 
+             linetype = "longdash", size = 1.3) +
+  facet_wrap(~City, scales = "free") +
+  labs(x = "Rating", y = "Jumlah",
+       title = "Distribusi Rating") +
+  scale_fill_discrete(name = "Rating Band")
+```
+
+### Jumlah hotel di setiap kota
+
+```{r echo=FALSE}
+hostel %>% 
+  group_by(City) %>% 
+  summarise(jumlah = n()) %>% 
+  ggplot(aes(x = City, y = jumlah, fill = City)) +
+  geom_col(show.legend = FALSE) +
+  labs(x = "Kota", y = "Jumlah Hotel",
+       title = "Jumlah Hotel di Setiap Kota") +
+  coord_flip()
+```
+
+## Prediksi Value for Money saat menginap
+
+### Split Data untuk training dan testing
+
+```{r}
+set.seed(1223)
+hostel_split <- initial_split(hostel, prop = 0.75, strata = rating.band)
+hostel_train <- training(hostel_split)
+hostel_test <- testing(hostel_split)
+```
+
+### Membuat recipe untuk model
+
+```{r}
+df_hostel_train <- as_tibble(hostel_train)
+df_hostel_train <- df_hostel_train %>% 
+  select(price.from, cleanliness, facilities, security, staff, valueformoney, summary.score, atmosphere, Distance)
+
+hostel_recipe <- training(hostel_split) %>%
+recipe() %>%
+update_role(valueformoney, new_role = "outcome") %>%
+update_role(price.from, atmosphere, cleanliness, facilities, Distance, new_role = "predictor") %>%
+update_role(hostel.name, new_role = "ID") %>%
+step_corr(all_predictors(), -price.from, -atmosphere)
+
+summary(hostel_recipe)
+
+```
+
+### Membuat model linear regression
+
+```{r}
+hostel_model <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+```
+
+### Membuat Workflow dengan recipe dan model
+
+```{r}
+hostel_workflow <- 
+  workflow() %>%
+  add_recipe(hostel_recipe) %>%
+  add_model(hostel_model)
+```
+
+### Training Model
+
+```{r}
+hostel_fit <- 
+  hostel_workflow %>%
+  fit(data = hostel_train)
+```
+
+```{r}
+summary(hostel_fit)
+```
+
+### Memprediksi dengan data testing
+
+```{r}
+hostel_test_predictions <- 
+  hostel_fit %>%
+  predict(hostel_test) %>%
+  bind_cols(hostel_test)
+```
+
+### Grafik Hasil Prediksi
+
+```{r}
+hostel_test_predictions %>%
+ggplot(aes(x = valueformoney, y = .pred)) +
+ geom_abline(intercept = 0, slope = 1, color = "red") +
+  geom_point() +
+  labs(title = "Hasil Prediksi vs Data Real", 
+       y = "Hasil Prediksi", x = "Data Real")
+```
+
+### Mendapatkan Akurasi Model
+
+```{r}
+hostel_fit %>%
+predict(hostel_test) %>%
+bind_cols(hostel_test) %>%
+metrics(truth = valueformoney, estimate = .pred)
+```
+
+## Membuat Aplikasi Shiny
+
+### Membuat UI Aplikasi
+
+```{r}
+ui <- fluidPage(
+  titlePanel("Hostel Value for Money Prediction"),
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("distance", "Distance from City Center (km)", min = 0, max = 10, value = 5),
+      sliderInput("cleanliness", "Cleanliness", min = 0, max = 10, value = 5),
+      sliderInput("facilities", "Facilities", min = 0, max = 10, value = 5),
+      sliderInput("security", "Security", min = 0, max = 10, value = 5),
+      sliderInput("staff", "Staff", min = 0, max = 10, value = 5),
+      sliderInput("summary.score", "Summary Score", min = 0, max = 10, value = 5),
+      sliderInput("atmosphere", "Atmosphere", min = 0, max = 10, value = 5),
+      sliderInput("price.from", "Price", min = 1000, max = 10000, value = 5000),
+    ),
+    mainPanel(
+      textOutput("valueformoney")
+    )
+  )
+)
+```
+
+### Membuat Server Shiny
+
+```{r}
+server <- function(input, output) {
+  output$valueformoney <- renderText({
+    new_hostel <- tibble(
+      city = input$city,
+      Distance = input$distance,
+      cleanliness = input$cleanliness,
+      facilities = input$facilities,
+      security = input$security,
+      staff = input$staff,
+      price.from = input$price.from,
+      summary.score = input$summary.score,
+      atmosphere = input$atmosphere,
+      X = 0,
+      City = "Kyoto",
+      rating.band = "Good",
+      location.y = 0,
+      lon = 0,
+      lat = 0,
+      Average.score = 0,
+      hostel.name = "new hostel"
+    )
+    new_hostel_predictions <- 
+      hostel_fit %>%
+      predict(new_hostel) %>%
+      bind_cols(new_hostel)
+    paste("Predicted Value For Money : ", round(new_hostel_predictions$.pred, 2))
+  })
+}
+```
+
+### Run Shiny
+
+```{r}
+shinyApp(ui = ui, server = server)
+```
